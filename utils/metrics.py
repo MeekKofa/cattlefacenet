@@ -1,275 +1,173 @@
-import numpy as np
+"""
+Detection metrics for object detection evaluation.
+Clean implementation with mAP calculation.
+"""
+
 import torch
-from sklearn.metrics import (
-    accuracy_score, precision_score, recall_score,
-    f1_score, confusion_matrix, balanced_accuracy_score,
-    matthews_corrcoef, roc_auc_score, average_precision_score,
-    cohen_kappa_score, log_loss, brier_score_loss
-)
-from sklearn.preprocessing import label_binarize
-from typing import Dict, Any, Optional, List
-import logging
-
-# Detection metric for object detection - handle missing dependency gracefully
-try:
-    from torchmetrics.detection import MeanAveragePrecision
-    TORCHMETRICS_AVAILABLE = True
-
-    def get_detection_metric():
-        return MeanAveragePrecision(iou_type="bbox")
-except ImportError:
-    TORCHMETRICS_AVAILABLE = False
-
-    def get_detection_metric():
-        return None
-    # Remove the warning from here - we'll only warn when actually trying to use it
+import numpy as np
+from collections import defaultdict
 
 
-class Metrics:
-    @staticmethod
-    def to_numpy(x: Any) -> np.ndarray:
-        """Convert input to numpy array; supports torch tensors."""
-        if hasattr(x, 'detach'):
-            return x.detach().cpu().numpy()
-        return np.array(x)
+class DetectionMetrics:
+    """Clean implementation of detection metrics including mAP."""
 
-    @staticmethod
-    def calculate_metrics(true_labels: Any,
-                          all_predictions: Any,
-                          all_probabilities: Optional[Any] = None) -> Dict[str, Any]:
-        """
-        Calculate a suite of evaluation metrics.
+    def __init__(self, num_classes, iou_threshold=0.5):
+        self.num_classes = num_classes
+        self.iou_threshold = iou_threshold
+        self.reset()
 
-        This version ensures that if the true labels are one-hot encoded,
-        they are converted to a 1D array. It also handles both binary and
-        multi-class cases robustly.
-        """
-        # Convert inputs to numpy arrays (handles torch tensors as well)
-        true_labels = Metrics.to_numpy(true_labels)
-        all_predictions = Metrics.to_numpy(all_predictions)
+    def reset(self):
+        """Reset all metrics."""
+        self.predictions = []
+        self.targets = []
 
-        # --- Convert true_labels to 1D if they are one-hot encoded ---
-        if true_labels.ndim > 1:
-            # Check if each row sums to 1 (one-hot check)
-            if np.allclose(true_labels.sum(axis=1), 1, atol=1e-5):
-                true_labels = np.argmax(true_labels, axis=1)
-            else:
-                true_labels = true_labels.flatten()
-
-        # Basic classification metrics
-        metrics = {
-            'accuracy': accuracy_score(true_labels, all_predictions),
-            'precision': precision_score(true_labels, all_predictions, average='macro', zero_division=0),
-            'recall': recall_score(true_labels, all_predictions, average='macro', zero_division=0),
-            'f1': f1_score(true_labels, all_predictions, average='macro', zero_division=0),
-            'precision_micro': precision_score(true_labels, all_predictions, average='micro', zero_division=0),
-            'precision_weighted': precision_score(true_labels, all_predictions, average='weighted', zero_division=0),
-            'recall_micro': recall_score(true_labels, all_predictions, average='micro', zero_division=0),
-            'recall_weighted': recall_score(true_labels, all_predictions, average='weighted', zero_division=0),
-            'f1_micro': f1_score(true_labels, all_predictions, average='micro', zero_division=0),
-            'f1_weighted': f1_score(true_labels, all_predictions, average='weighted', zero_division=0),
-            'balanced_accuracy': balanced_accuracy_score(true_labels, all_predictions),
-            'mcc': matthews_corrcoef(true_labels, all_predictions),
-            'cohen_kappa': cohen_kappa_score(true_labels, all_predictions)
-        }
-
-        # Compute confusion matrix and derive TP, FP, FN, TN
-        cm = confusion_matrix(true_labels, all_predictions)
-        metrics['confusion_matrix'] = cm.tolist()
-        tp = np.diag(cm)
-        fp = np.sum(cm, axis=0) - tp
-        fn = np.sum(cm, axis=1) - tp
-        tn = np.sum(cm) - (tp + fp + fn)
-        # Compute per-class specificity and then average them
-        specificity = np.mean(tn / (tn + fp + 1e-10))
-        metrics['specificity'] = specificity
-        metrics['tp'] = tp.tolist()
-        metrics['tn'] = tn.tolist()
-        metrics['fp'] = fp.tolist()
-        metrics['fn'] = fn.tolist()
-
-        # Initialize advanced metrics with default values
-        metrics['roc_auc'] = None
-        metrics['average_precision'] = None
-        metrics['log_loss'] = None
-        metrics['brier_score'] = None
-        metrics['ece'] = None
-
-        if all_probabilities is not None:
-            # Convert probabilities to numpy array (handle torch tensors as well)
-            all_probabilities = Metrics.to_numpy(all_probabilities)
-
-            try:
-                # Determine the number of unique classes from true labels
-                unique_classes = np.unique(true_labels)
-                n_classes = len(unique_classes)
-
-                # Calculate log loss (works for both binary and multi-class)
-                try:
-                    metrics['log_loss'] = log_loss(
-                        true_labels, all_probabilities)
-                except Exception as e:
-                    logging.warning(f"Log loss calculation error: {str(e)}")
-                    metrics['log_loss'] = np.nan
-
-                if n_classes == 2:
-                    # --- Binary classification case ---
-                    # For binary, we need the probability of the positive class (class 1)
-                    if all_probabilities.ndim == 2 and all_probabilities.shape[1] == 2:
-                        # Extract probability for positive class (class 1)
-                        pos_probs = all_probabilities[:, 1]
-                    else:
-                        # If shape is not what we expect, flatten the array
-                        pos_probs = all_probabilities.ravel()
-
-                    try:
-                        # Compute binary metrics
-                        metrics['roc_auc'] = roc_auc_score(
-                            true_labels, pos_probs)
-                        metrics['average_precision'] = average_precision_score(
-                            true_labels, pos_probs)
-                        metrics['brier_score'] = brier_score_loss(
-                            true_labels, pos_probs)
-                    except Exception as e:
-                        logging.warning(
-                            f"Binary metric calculation error: {str(e)}")
-                        metrics['roc_auc'] = np.nan
-                        metrics['average_precision'] = np.nan
-                        metrics['brier_score'] = np.nan
-
-                else:
-                    # --- Multi-class case ---
-                    # Binarize true labels for multi-class ROC AUC and average precision
-                    try:
-                        true_labels_binarized = label_binarize(
-                            true_labels, classes=unique_classes)
-
-                        if all_probabilities.ndim == 2 and all_probabilities.shape[1] == n_classes:
-                            metrics['roc_auc'] = roc_auc_score(
-                                true_labels_binarized, all_probabilities,
-                                average='macro', multi_class='ovr'
-                            )
-                            metrics['average_precision'] = average_precision_score(
-                                true_labels_binarized, all_probabilities, average='macro'
-                            )
-                            # Compute average per-class Brier score
-                            brier_scores = []
-                            for i in range(n_classes):
-                                brier_scores.append(brier_score_loss(
-                                    true_labels_binarized[:, i], all_probabilities[:, i]))
-                            metrics['brier_score'] = np.mean(brier_scores)
-                        else:
-                            logging.warning(
-                                f"Probability shape mismatch: expected {n_classes} columns, got {all_probabilities.shape[1]}"
-                            )
-                            metrics['roc_auc'] = np.nan
-                            metrics['average_precision'] = np.nan
-                            metrics['brier_score'] = np.nan
-                    except Exception as e:
-                        logging.warning(
-                            f"Multi-class metric calculation error: {str(e)}")
-                        metrics['roc_auc'] = np.nan
-                        metrics['average_precision'] = np.nan
-                        metrics['brier_score'] = np.nan
-
-                # --- Compute Expected Calibration Error (ECE) ---
-                # Using maximum predicted probability as the confidence measure.
-                prob_max = np.max(all_probabilities, axis=1)
-                correct = (all_predictions == true_labels).astype(float)
-                n_bins = 10
-                bins = np.linspace(0, 1, n_bins + 1)
-                ece = 0.0
-                for i in range(n_bins):
-                    bin_mask = (prob_max >= bins[i]) & (prob_max < bins[i + 1])
-                    if np.any(bin_mask):
-                        avg_conf = np.mean(prob_max[bin_mask])
-                        avg_acc = np.mean(correct[bin_mask])
-                        ece += np.abs(avg_conf - avg_acc) * \
-                            np.sum(bin_mask) / len(prob_max)
-                metrics['ece'] = ece
-
-            except Exception as e:
-                logging.error(f"Error calculating advanced metrics: {str(e)}")
-                metrics['roc_auc'] = np.nan
-                metrics['average_precision'] = np.nan
-                metrics['brier_score'] = np.nan
-                metrics['ece'] = np.nan
-
-        return metrics
-
-    @staticmethod
-    def calculate_detection_metrics(predictions: List[Dict], targets: List[Dict]) -> Dict[str, Any]:
-        """
-        Calculate object detection metrics (mAP, etc.)
+    def update(self, predictions, targets):
+        """Update metrics with batch predictions and targets.
 
         Args:
-            predictions: List of dicts with keys 'boxes', 'scores', 'labels'
-            targets: List of dicts with keys 'boxes', 'labels'
-
-        Returns:
-            Dictionary containing detection metrics
+            predictions: List of dicts with 'boxes', 'scores', 'labels'
+            targets: List of dicts with 'boxes', 'labels'
         """
-        # Try to use torchmetrics if available
-        if TORCHMETRICS_AVAILABLE:
-            try:
-                metric = get_detection_metric()
-                if metric is not None:
-                    # Convert to the format expected by torchmetrics
-                    metric.update(predictions, targets)
-                    results = metric.compute()
+        self.predictions.extend(predictions)
+        self.targets.extend(targets)
 
-                    # Convert tensor results to float for JSON serialization
-                    metrics = {}
-                    for key, value in results.items():
-                        if hasattr(value, 'item'):
-                            metrics[key] = value.item()
-                        else:
-                            metrics[key] = float(value)
+    def compute_map(self):
+        """Compute mean Average Precision."""
+        if not self.predictions or not self.targets:
+            return 0.0
 
-                    return metrics
-            except Exception as e:
-                logging.warning(
-                    f"Error calculating detection metrics with torchmetrics: {e}")
+        # Collect all predictions and ground truths
+        all_pred_boxes = []
+        all_pred_scores = []
+        all_pred_labels = []
+        all_gt_boxes = []
+        all_gt_labels = []
+        all_image_ids = []
 
-        # Fallback: basic detection metrics
-        metrics = {}
+        for i, (pred, gt) in enumerate(zip(self.predictions, self.targets)):
+            if len(pred['boxes']) > 0:
+                all_pred_boxes.append(pred['boxes'].cpu())
+                all_pred_scores.append(pred['scores'].cpu())
+                all_pred_labels.append(pred['labels'].cpu())
+                all_image_ids.extend([i] * len(pred['boxes']))
 
-        total_predictions = sum(len(pred.get('scores', []))
-                                for pred in predictions)
-        total_targets = sum(len(target.get('labels', []))
-                            for target in targets)
+            if len(gt['boxes']) > 0:
+                all_gt_boxes.append(gt['boxes'].cpu())
+                all_gt_labels.append(gt['labels'].cpu())
 
-        metrics['total_predictions'] = total_predictions
-        metrics['total_targets'] = total_targets
-        metrics['num_images'] = len(predictions)
+        if not all_pred_boxes or not all_gt_boxes:
+            return 0.0
 
-        # Simple accuracy based on number of detections (very basic)
-        if total_targets > 0:
-            detection_recall = min(total_predictions / total_targets, 1.0)
-        else:
-            detection_recall = 0.0
+        # Concatenate all predictions and ground truths
+        pred_boxes = torch.cat(all_pred_boxes, dim=0)
+        pred_scores = torch.cat(all_pred_scores, dim=0)
+        pred_labels = torch.cat(all_pred_labels, dim=0)
 
-        metrics['detection_recall'] = detection_recall
+        # Calculate AP for each class
+        aps = []
+        for class_id in range(self.num_classes):
+            class_pred_mask = pred_labels == class_id
+            if not class_pred_mask.any():
+                continue
 
-        # Calculate per-class detection counts
-        pred_class_counts = {}
-        target_class_counts = {}
+            class_pred_boxes = pred_boxes[class_pred_mask]
+            class_pred_scores = pred_scores[class_pred_mask]
 
-        for pred in predictions:
-            for label in pred.get('labels', []):
-                label_val = int(label) if hasattr(
-                    label, 'item') else int(label)
-                pred_class_counts[label_val] = pred_class_counts.get(
-                    label_val, 0) + 1
+            # Get ground truth boxes for this class
+            class_gt_boxes = []
+            for i, gt in enumerate(self.targets):
+                if len(gt['boxes']) > 0:
+                    gt_mask = gt['labels'] == class_id
+                    if gt_mask.any():
+                        class_gt_boxes.append(gt['boxes'][gt_mask].cpu())
 
-        for target in targets:
-            for label in target.get('labels', []):
-                label_val = int(label) if hasattr(
-                    label, 'item') else int(label)
-                target_class_counts[label_val] = target_class_counts.get(
-                    label_val, 0) + 1
+            if not class_gt_boxes:
+                continue
 
-        metrics['pred_class_counts'] = pred_class_counts
-        metrics['target_class_counts'] = target_class_counts
+            class_gt_boxes = torch.cat(class_gt_boxes, dim=0)
 
-        return metrics
+            # Calculate AP for this class
+            ap = self._calculate_ap(
+                class_pred_boxes, class_pred_scores, class_gt_boxes)
+            aps.append(ap)
+
+        return np.mean(aps) if aps else 0.0
+
+    def _calculate_ap(self, pred_boxes, pred_scores, gt_boxes):
+        """Calculate Average Precision for a single class."""
+        if len(pred_boxes) == 0 or len(gt_boxes) == 0:
+            return 0.0
+
+        # Sort predictions by confidence score
+        sorted_indices = torch.argsort(pred_scores, descending=True)
+        pred_boxes = pred_boxes[sorted_indices]
+        pred_scores = pred_scores[sorted_indices]
+
+        tp = torch.zeros(len(pred_boxes))
+        fp = torch.zeros(len(pred_boxes))
+
+        # Track which ground truth boxes have been matched
+        gt_matched = torch.zeros(len(gt_boxes), dtype=torch.bool)
+
+        for i, pred_box in enumerate(pred_boxes):
+            # Calculate IoU with all ground truth boxes
+            ious = self._calculate_iou(pred_box.unsqueeze(0), gt_boxes)
+            max_iou, max_idx = torch.max(ious, dim=1)
+            max_iou = max_iou.item()
+            max_idx = max_idx.item()
+
+            if max_iou >= self.iou_threshold and not gt_matched[max_idx]:
+                tp[i] = 1
+                gt_matched[max_idx] = True
+            else:
+                fp[i] = 1
+
+        # Calculate precision and recall
+        tp_cumsum = torch.cumsum(tp, dim=0)
+        fp_cumsum = torch.cumsum(fp, dim=0)
+
+        precision = tp_cumsum / (tp_cumsum + fp_cumsum + 1e-8)
+        recall = tp_cumsum / len(gt_boxes)
+
+        # Calculate AP using 11-point interpolation
+        ap = self._calculate_ap_11_point(precision, recall)
+        return ap.item()
+
+    def _calculate_iou(self, boxes1, boxes2):
+        """Calculate IoU between two sets of boxes."""
+        # boxes format: [x1, y1, x2, y2]
+        area1 = (boxes1[:, 2] - boxes1[:, 0]) * (boxes1[:, 3] - boxes1[:, 1])
+        area2 = (boxes2[:, 2] - boxes2[:, 0]) * (boxes2[:, 3] - boxes2[:, 1])
+
+        # Calculate intersection
+        x1 = torch.max(boxes1[:, 0:1], boxes2[:, 0:1].T)
+        y1 = torch.max(boxes1[:, 1:2], boxes2[:, 1:2].T)
+        x2 = torch.min(boxes1[:, 2:3], boxes2[:, 2:3].T)
+        y2 = torch.min(boxes1[:, 3:4], boxes2[:, 3:4].T)
+
+        intersection = torch.clamp(x2 - x1, min=0) * \
+            torch.clamp(y2 - y1, min=0)
+        union = area1[:, None] + area2[None, :] - intersection
+
+        return intersection / (union + 1e-8)
+
+    def _calculate_ap_11_point(self, precision, recall):
+        """Calculate AP using 11-point interpolation."""
+        recall_thresholds = torch.linspace(0, 1, 11)
+        ap = torch.zeros(11)
+
+        for i, recall_thresh in enumerate(recall_thresholds):
+            precisions_above_thresh = precision[recall >= recall_thresh]
+            if len(precisions_above_thresh) > 0:
+                ap[i] = torch.max(precisions_above_thresh)
+
+        return torch.mean(ap)
+
+    def get_metrics(self):
+        """Get all computed metrics."""
+        map_50 = self.compute_map()
+        return {
+            'mAP@0.5': map_50,
+            'num_predictions': len(self.predictions),
+            'num_targets': len(self.targets)
+        }

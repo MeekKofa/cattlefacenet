@@ -277,7 +277,7 @@ class CentralizedDatasetLoader:
         logging.info(f"   📊 Val: {len(val_dataset)} images")
         logging.info(f"   📊 Test: {len(test_dataset)} images")
         logging.info(
-            f"   🏷️  Detected classes: {sorted(train_dataset.classes)}")
+            f"   🏷️  Detected classes: {len(sorted(train_dataset.classes))} classes ({min(train_dataset.classes)}-{max(train_dataset.classes)})")
 
         return train_loader, val_loader, test_loader
 

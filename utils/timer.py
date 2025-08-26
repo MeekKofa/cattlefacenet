@@ -1,37 +1,58 @@
+"""
+Simple timer utility for benchmarking training and evaluation.
+"""
+
 import time
-import logging
+from contextlib import contextmanager
 
 
 class Timer:
+    """Simple timer for measuring execution time."""
+
     def __init__(self):
         self.start_time = None
-        logging.info("Timer initialized.")
+        self.end_time = None
 
-    @staticmethod
-    def format_duration(seconds):
-        """
-        Format duration from seconds to hours, minutes, and seconds.
+    def start(self):
+        """Start the timer."""
+        self.start_time = time.time()
 
-        Args:
-        - seconds (int): Duration in seconds.
+    def stop(self):
+        """Stop the timer and return elapsed time."""
+        if self.start_time is None:
+            raise ValueError("Timer not started")
+        self.end_time = time.time()
+        return self.elapsed()
 
-        Returns:
-        - Formatted duration string.
-        """
-        m, s = divmod(seconds, 60)
-        h, m = divmod(m, 60)
-        h, m, s = int(h), int(m), int(s)
-        hour_str = f"{h} {'hr' if h == 1 else 'hrs'}"
-        min_str = f"{m} {'min' if m == 1 else 'mins'}"
-        sec_str = f"{s} {'sec' if s == 1 else 'secs'}"
-        # duration_str = f"{hour_str}, {min_str}, {sec_str}"
-        duration_str = f"{min_str}, {sec_str}"
+    def elapsed(self):
+        """Get elapsed time."""
+        if self.start_time is None:
+            return 0
+        end = self.end_time if self.end_time else time.time()
+        return end - self.start_time
 
-        return duration_str
+    @contextmanager
+    def time_it(self):
+        """Context manager for timing code blocks."""
+        self.start()
+        try:
+            yield self
+        finally:
+            self.stop()
 
-    @staticmethod
-    def early_stopping(patience, validation_losses):
-        if len(validation_losses) > patience and validation_losses[-1] > min(validation_losses[-patience - 1:-1]):
-            logging.info("Early stopping triggered.")
-            return True
-        return False
+    def format_time(self, seconds=None):
+        """Format time in human readable format."""
+        if seconds is None:
+            seconds = self.elapsed()
+
+        if seconds < 60:
+            return f"{seconds:.2f}s"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            seconds = seconds % 60
+            return f"{int(minutes)}m {seconds:.1f}s"
+        else:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            seconds = seconds % 60
+            return f"{int(hours)}h {int(minutes)}m {seconds:.0f}s"

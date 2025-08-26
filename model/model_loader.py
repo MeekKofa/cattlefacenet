@@ -7,8 +7,9 @@ import logging
 from model.backbone.resnet import get_resnet
 from model.backbone.densenet import get_densenet
 from model.backbone.vgg import get_vgg
-from model.myccc.vgg_myccc import get_vgg_myccc
-from model.myccc.vgg_yolov8 import get_vgg_yolov8
+from model.yolo.vggnet import get_vggnet
+from model.yolo.yolov8vgg import get_yolov8vgg
+from model.yolo.yolov8resnet import get_yolo8resnet
 from model.attention.MSARNet import MSARNet
 from model.meddef.meddef1 import get_meddef1
 from utils.memory_efficient_model import MemoryEfficientModel
@@ -26,8 +27,9 @@ class ModelLoader:
             'resnet': {'func': get_resnet, 'params': ['depth', 'pretrained', 'input_channels', 'num_classes'], 'type': 'classification'},
             'densenet': {'func': get_densenet, 'params': ['depth', 'pretrained', 'input_channels', 'num_classes'], 'type': 'classification'},
             'vgg': {'func': get_vgg, 'params': ['depth', 'pretrained', 'input_channels', 'num_classes'], 'type': 'classification'},
-            'vgg_myccc': {'func': get_vgg_myccc, 'params': ['depth', 'pretrained=False', 'input_channels', 'num_classes'], 'type': 'classification'},
-            'vgg_yolov8': {'func': get_vgg_yolov8, 'params': ['input_channels', 'num_classes', 'pretrained=False'], 'type': 'object_detection'},
+            'vggnet': {'func': get_vggnet, 'params': ['depth', 'pretrained=False', 'input_channels', 'num_classes'], 'type': 'classification'},
+            'yolo8resnet': {'func': get_yolo8resnet, 'params': ['input_channels', 'num_classes'], 'type': 'object_detection'},
+            'yolov8vgg': {'func': get_yolov8vgg, 'params': ['input_channels', 'num_classes'], 'type': 'object_detection'},
             'meddef1': {'func': get_meddef1, 'params': ['depth', 'input_channels', 'num_classes', 'robust_method'], 'type': 'classification'},
         }
         logging.info("ModelLoader initialized with models: " +
@@ -129,19 +131,20 @@ class ModelLoader:
                     'input_channels': input_channels,
                     'num_classes': num_classes
                 }
-                
+
                 # Special handling for models that don't use depth
-                if model_name == 'vgg_yolov8':
+                if model_name == 'yolo8resnet':
                     kwargs = {
                         'input_channels': input_channels,
                         'num_classes': num_classes,
                         'pretrained': self.pretrained
                     }
-                
-                filtered_kwargs = {k: v for k, v in kwargs.items() if k in model_params}
+
+                filtered_kwargs = {k: v for k,
+                                   v in kwargs.items() if k in model_params}
 
                 # Format model name for this depth
-                if model_name == 'vgg_yolov8':
+                if model_name == 'yolo8resnet':
                     model_name_with_depth = f"{model_name}_{single_depth}"
                 else:
                     model_name_with_depth = f"{model_name}_{single_depth}"
@@ -163,16 +166,17 @@ class ModelLoader:
                 'input_channels': input_channels,
                 'num_classes': num_classes
             }
-            
+
             # Special handling for models that don't use depth
-            if model_name == 'vgg_yolov8':
+            if model_name == 'yolo8resnet':
                 kwargs = {
                     'input_channels': input_channels,
                     'num_classes': num_classes,
                     'pretrained': self.pretrained
                 }
-            
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k in model_params}
+
+            filtered_kwargs = {k: v for k,
+                               v in kwargs.items() if k in model_params}
             model_name_with_depth = self._format_model_name(model_name, depth)
             model = self._create_or_load_model(
                 model_func, filtered_kwargs, model_name_with_depth,

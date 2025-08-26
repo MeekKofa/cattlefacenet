@@ -189,9 +189,33 @@ If your YOLO-based object detection model is not learning (mAP remains 0.0):
 - Validate your train/val split is not empty.
 - Run `yolo detect train data=cattleface.yaml model=yolov8n.pt imgsz=640 epochs=5` to verify dataset loads and training starts.
 
+## Memory Management
+
+**YOLO8ResNet (ResNet50-based) Memory Requirements:**
+
+- Minimum GPU Memory: 8 GB
+- Recommended: 12+ GB
+- Batch size recommendations:
+  - 8 GB GPU: batch_size 4-8
+  - 12 GB GPU: batch_size 8-16
+  - 16+ GB GPU: batch_size 16-32
+
+**If you encounter CUDA out of memory errors:**
+
+1. Reduce batch size: `--train_batch 4` or `--train_batch 8`
+2. Use VGG-based model instead: `--arch yolov8vgg`
+3. Clear GPU memory: restart Python session or use `nvidia-smi` to kill other processes
+4. Use gradient accumulation for effective larger batch sizes
 
 ```bash
 
 python main.py --data cattlebody --arch vgg_yolov8 --depth '{"vgg_yolov8": [16]}' --train_batch 4 --epochs 100 --lr 0.01 --drop 0.5 --num_workers 2 --pin_memory --gpu-ids 2 --task_name normal_training --optimizer adam --momentum 0.9 --weight_decay 5e-4 --scheduler cosine --min_epochs 20 --patience 30 --augment --label_smoothing 0.1
 
+
+python main.py --data cattleface --arch vgg_yolov8 --depth '{"vgg_yolov8": [16]}' --train_batch 32 --epochs 2 --lr 0.0001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 0 --task_name normal_training --optimizer adam
+
+python main.py --data cattleface --arch yolo8resnet --depth '{"yolo8resnet": [50]}' --train_batch 32 --epochs 100 --lr 0.0001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 0 --task_name normal_training --optimizer adam
+
+
+python main.py --data cattleface --arch yolo8resnet --depth '{"yolo8resnet": [50]}' --train_batch 8 --epochs 100 --lr 0.0001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 2 --task_name normal_training --optimizer adam
 ```

@@ -244,8 +244,18 @@ def parse_args():
     #     args.patience = 25
 
     # Configure CUDA devices
-    os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
+    # Parse gpu_ids string to list of integers
+    if args.gpu_ids:
+        gpu_list = [int(x.strip()) for x in args.gpu_ids.split(',')]
+        os.environ['CUDA_VISIBLE_DEVICES'] = args.gpu_ids
+        # After setting CUDA_VISIBLE_DEVICES, device indices are remapped
+        # So if we specify gpu-ids=2, it becomes cuda:0 in the visible devices
+        args.gpu_ids_list = [0] if len(
+            gpu_list) == 1 else list(range(len(gpu_list)))
+    else:
+        args.gpu_ids_list = [0]
+
     use_cuda = torch and hasattr(torch, "cuda") and torch.cuda.is_available()
-    args.device = f"cuda:{args.device_index}" if use_cuda else "cpu"
+    args.device = f"cuda:{args.gpu_ids_list[0]}" if use_cuda else "cpu"
 
     return args
