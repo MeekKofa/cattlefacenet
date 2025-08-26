@@ -424,7 +424,7 @@ class ModernYOLOv8(nn.Module):
             top_conf, top_indices = torch.topk(conf_flat, top_k)
 
             # Convert flat indices to 2D coordinates
-            top_h = top_indices // grid_w
+            top_h = torch.div(top_indices, grid_w, rounding_mode='trunc')
             top_w = top_indices % grid_w
 
             # Extract corresponding boxes and classes
@@ -435,18 +435,31 @@ class ModernYOLOv8(nn.Module):
             class_scores = classes[top_h, top_w]  # [top_k, num_classes]
             detection_labels = torch.argmax(class_scores, dim=1)  # [top_k]
 
-            # Apply confidence threshold
-            valid_mask = detection_scores > 0.1
+            # Apply confidence threshold (lowered for early training)
+            valid_mask = detection_scores > 0.05  # Much lower threshold
             detection_boxes = detection_boxes[valid_mask]
             detection_scores = detection_scores[valid_mask]
             detection_labels = detection_labels[valid_mask]
 
-            # Ensure we have at least one detection
+            # Convert normalized coordinates to actual box format
+            if len(detection_boxes) > 0:
+                # Convert from [cx, cy, w, h] to [x1, y1, x2, y2]
+                cx, cy, w, h = detection_boxes.unbind(-1)
+                x1 = cx - w / 2
+                y1 = cy - h / 2
+                x2 = cx + w / 2
+                y2 = cy + h / 2
+                detection_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
+                
+                # Clamp to valid range [0, 1]
+                detection_boxes = torch.clamp(detection_boxes, 0.0, 1.0)
+
+            # Only create dummy detection if absolutely necessary
             if len(detection_boxes) == 0:
-                detection_boxes = torch.zeros(
-                    (1, 4), device=predictions.device)
-                detection_scores = torch.zeros(
-                    1, device=predictions.device) + 0.1
+                # Create a small centered detection instead of zeros
+                detection_boxes = torch.tensor(
+                    [[0.4, 0.4, 0.6, 0.6]], device=predictions.device)  # Small centered box
+                detection_scores = torch.tensor([0.02], device=predictions.device)
                 detection_labels = torch.zeros(
                     1, dtype=torch.long, device=predictions.device)
 

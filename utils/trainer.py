@@ -9,6 +9,7 @@ from torch.optim import Adam, SGD
 from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR
 from pathlib import Path
 import json
+from tqdm import tqdm
 from .logger import Logger
 from .timer import Timer
 from .metrics import DetectionMetrics
@@ -88,7 +89,11 @@ class DetectionTrainer:
 
         self.timer.start()
 
-        for batch_idx, (images, targets) in enumerate(self.train_loader):
+        # Create progress bar
+        train_pbar = tqdm(self.train_loader, desc=f"Training Epoch",
+                          leave=False, dynamic_ncols=True)
+
+        for batch_idx, (images, targets) in enumerate(train_pbar):
             # Move to device - handle both tensor and list formats
             if isinstance(images, list):
                 # If images is a list of tensors, stack them into a batch
@@ -132,15 +137,17 @@ class DetectionTrainer:
 
             total_loss += loss.item()
 
-            # Log progress less frequently and only to one logger
-            if batch_idx % self.config.get('log_interval', 100) == 0:
-                progress = 100.0 * batch_idx / num_batches
-                # Only log to main logger, not both
-                print(f'Epoch {self.current_epoch}: [{batch_idx}/{num_batches} '
-                      f'({progress:.1f}%)] Loss: {loss.item():.4f}')
+            # Update progress bar with current loss
+            train_pbar.set_postfix({
+                'Loss': f'{loss.item():.4f}',
+                'Avg': f'{total_loss/(batch_idx+1):.4f}'
+            })
 
         avg_loss = total_loss / num_batches
         epoch_time = self.timer.stop()
+
+        # Close progress bar
+        train_pbar.close()
 
         self.logger.info(
             f'Epoch {self.current_epoch} Training - '
@@ -156,7 +163,7 @@ class DetectionTrainer:
         self.metrics.reset()
 
         with torch.no_grad():
-            for images, targets in self.val_loader:
+            for batch_idx, (images, targets) in enumerate(self.val_loader):
                 # Move to device - handle both tensor and list formats
                 if isinstance(images, list):
                     # If images is a list of tensors, stack them into a batch
@@ -173,20 +180,76 @@ class DetectionTrainer:
                 targets = [{k: v.to(self.device) if hasattr(v, 'to') else v
                             for k, v in t.items()} for t in targets]
 
-                # Forward pass
-                if self.model.training:
-                    self.model.eval()
-
-                outputs = self.model(images)
-
-                # Compute validation loss if possible
+                # Forward pass - handle loss computation properly
                 if hasattr(self.model, 'compute_loss'):
+                    # During validation, we need both loss and predictions
+                    # The model is in eval mode, so we need to force training mode temporarily for loss
+                    was_training = self.model.training
+
+                    # Get loss by temporarily switching to training mode
+                    self.model.train()
                     loss_dict = self.model(images, targets)
-                    loss = sum(loss for loss in loss_dict.values())
-                    total_loss += loss.item()
+                    if isinstance(loss_dict, dict) and 'total_loss' in loss_dict:
+                        loss = loss_dict['total_loss'].item()
+                        total_loss += loss
+
+                    # Get predictions in eval mode
+                    self.model.eval()
+                    # Returns detections for metrics
+                    outputs = self.model(images)
+
+                    # Debug: Check what outputs look like (first batch only)
+                    if batch_idx == 0 and not hasattr(self, '_val_debug_printed'):
+                        print(f"🔍 Validation Debug:")
+                        print(f"  Outputs type: {type(outputs)}")
+                        if isinstance(outputs, list) and len(outputs) > 0:
+                            print(f"  First output type: {type(outputs[0])}")
+                            if isinstance(outputs[0], dict):
+                                print(
+                                    f"  First output keys: {list(outputs[0].keys())}")
+                                pred = outputs[0]
+                                if 'boxes' in pred:
+                                    print(
+                                        f"  Predicted boxes shape: {pred['boxes'].shape}")
+                                    print(
+                                        f"  Num predicted boxes: {len(pred['boxes'])}")
+                                    if len(pred['boxes']) > 0:
+                                        print(
+                                            f"  First 3 boxes: {pred['boxes'][:3]}")
+                                if 'scores' in pred:
+                                    print(
+                                        f"  Predicted scores shape: {pred['scores'].shape}")
+                                    print(
+                                        f"  Num predicted scores: {len(pred['scores'])}")
+                                    if len(pred['scores']) > 0:
+                                        print(
+                                            f"  Score range: {pred['scores'].min():.4f} - {pred['scores'].max():.4f}")
+                                        print(
+                                            f"  Scores above 0.1: {(pred['scores'] > 0.1).sum()}")
+                                        print(
+                                            f"  Scores above 0.5: {(pred['scores'] > 0.5).sum()}")
+                                if 'labels' in pred:
+                                    print(
+                                        f"  Predicted labels shape: {pred['labels'].shape}")
+
+                        print(f"  Targets sample: {len(targets)} targets")
+                        if len(targets) > 0:
+                            print(
+                                f"  Target boxes: {targets[0]['boxes'].shape}")
+                            print(
+                                f"  Target labels: {targets[0]['labels'].shape}")
+                        self._val_debug_printed = True
+
+                    # Restore original training state
+                    if was_training:
+                        self.model.train()
+                else:
+                    # Standard forward pass
+                    outputs = self.model(images)
 
                 # Update metrics
-                self.metrics.update(outputs, targets)
+                if not isinstance(outputs, dict):
+                    self.metrics.update(outputs, targets)
 
         avg_loss = total_loss / len(self.val_loader) if total_loss > 0 else 0.0
         metrics = self.metrics.get_metrics()
