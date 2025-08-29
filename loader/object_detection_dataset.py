@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 import json
 import logging
 from torchvision import transforms
+from class_mapping import CLASS_MAPPING
 
 
 def get_strong_augmentation(input_size=640):
@@ -46,7 +47,9 @@ def parse_annotation(annotation_path):
                 data = line.strip().split()
                 if len(data) >= 5:
                     class_id = int(data[0])
-                    classes.append(class_id)
+                    # Map large/raw class ids to consolidated groups if mapping exists
+                    mapped_id = CLASS_MAPPING.get(class_id, class_id)
+                    classes.append(mapped_id)
                     center_x, center_y, width, height = [
                         float(x) for x in data[1:5]]
 
@@ -96,9 +99,12 @@ def parse_annotation(annotation_path):
             # Convert class name to integer if it's a string
             if isinstance(cls_name, str):
                 # You might want to maintain a class name to ID mapping
-                classes.append(hash(cls_name) % 1000)  # Simple hash for demo
+                raw_id = hash(cls_name) % 1000  # Simple hash for demo
             else:
-                classes.append(int(cls_name))
+                raw_id = int(cls_name)
+
+            mapped_id = CLASS_MAPPING.get(raw_id, raw_id)
+            classes.append(mapped_id)
 
             bbox = obj.find('bndbox')
             xmin = float(bbox.find('xmin').text) / img_width  # Normalize

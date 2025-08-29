@@ -10,9 +10,15 @@ from model.backbone.vgg import get_vgg
 from model.yolo.vggnet import get_vggnet
 from model.yolo.yolov8vgg import get_yolov8vgg
 from model.yolo.yolov8resnet import get_yolo8resnet
+from model.yolo.yolonet.yolonet import get_yolonet
 from model.attention.MSARNet import MSARNet
 from model.meddef.meddef1 import get_meddef1
 from utils.memory_efficient_model import MemoryEfficientModel
+# Optional import to infer num_classes from registered datasets when not provided
+try:
+    from loader.dataset_loader import get_dataset_loader
+except Exception:
+    get_dataset_loader = None
 
 
 class ModelLoader:
@@ -28,8 +34,10 @@ class ModelLoader:
             'densenet': {'func': get_densenet, 'params': ['depth', 'pretrained', 'input_channels', 'num_classes'], 'type': 'classification'},
             'vgg': {'func': get_vgg, 'params': ['depth', 'pretrained', 'input_channels', 'num_classes'], 'type': 'classification'},
             'vggnet': {'func': get_vggnet, 'params': ['depth', 'pretrained=False', 'input_channels', 'num_classes'], 'type': 'classification'},
-            'yolo8resnet': {'func': get_yolo8resnet, 'params': ['input_channels', 'num_classes'], 'type': 'object_detection'},
-            'yolov8vgg': {'func': get_yolov8vgg, 'params': ['input_channels', 'num_classes'], 'type': 'object_detection'},
+            # Public 'yolonet' should map to the research combinator (inference/experiments)
+            'yolonet': {'func': get_yolonet, 'params': ['input_channels', 'num_classes', 'pretrained', 'resnet_depth', 'yolo_variant', 'mode', 'device'], 'type': 'object_detection'},
+            # Separate key for training-ready implementation (provides compute_loss)
+            'yolonet_train': {'func': get_yolo8resnet, 'params': ['input_channels', 'num_classes', 'pretrained'], 'type': 'object_detection'},
             'meddef1': {'func': get_meddef1, 'params': ['depth', 'input_channels', 'num_classes', 'robust_method'], 'type': 'classification'},
         }
         logging.info("ModelLoader initialized with models: " +
@@ -106,16 +114,43 @@ class ModelLoader:
         if model_name not in self.models_dict:
             raise ValueError(f"Model {model_name} not recognized.")
 
+        # If num_classes is not provided, try to infer it from the dataset registry
         if num_classes is None:
-            raise ValueError("num_classes must be specified")
+            inferred = None
+            if dataset_name and get_dataset_loader is not None:
+                try:
+                    ds_loader = get_dataset_loader()
+                    info = ds_loader.get_dataset_info(dataset_name)
+                    if info and 'num_classes' in info and info['num_classes']:
+                        inferred = info['num_classes']
+                except Exception:
+                    inferred = None
+
+            if inferred is not None:
+                num_classes = inferred
+                logging.info(
+                    f"ModelLoader: Inferred num_classes={num_classes} from dataset registry for dataset '{dataset_name}'")
+            else:
+                raise ValueError("num_classes must be specified")
 
         model_entry = self.models_dict[model_name]
         model_func = model_entry['func']
         model_params = model_entry['params']
 
         # Handle multiple depths
+        # Allow passing a depth dict keyed by a related/base model name.
+        # Example: depth={'yolonet':[50]} but model_name='yolonet_train'
         if isinstance(depth, dict):
             model_depths = depth.get(model_name, [])
+            if not model_depths:
+                # Try to find a base key by stripping common suffixes like '_train'
+                base_name = model_name
+                if model_name.endswith('_train'):
+                    base_name = model_name[: -len('_train')]
+                # If base present in provided depth dict, use it
+                if base_name in depth:
+                    model_depths = depth.get(base_name, [])
+
             if not model_depths:
                 raise ValueError(
                     f"No depths specified for model {model_name} in {depth}")

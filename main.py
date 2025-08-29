@@ -114,7 +114,8 @@ def create_training_config(args):
 
     config = {
         # Model and data
-        'num_classes': 400,  # Cattle face classes
+        # num_classes will be detected dynamically from the dataset when available
+        'num_classes': None,
         'arch': args.arch,
         'dataset': dataset_name,
         'batch_size': args.train_batch,
@@ -183,7 +184,24 @@ def setup_data(config, logger):
     logger.info(f"Train samples: {len(train_loader.dataset)}")
     logger.info(f"Validation samples: {len(val_loader.dataset)}")
 
-    return train_loader, val_loader
+    # Try to infer number of classes from the training dataset
+    num_classes = None
+    try:
+        dataset_obj = train_loader.dataset
+        # Many dataset implementations expose a `classes` list
+        if hasattr(dataset_obj, 'classes') and getattr(dataset_obj, 'classes') is not None:
+            num_classes = len(dataset_obj.classes)
+        # Fallback: some collate functions wrap dataset inside a Subset or dataset attribute
+        elif hasattr(dataset_obj, 'dataset') and hasattr(dataset_obj.dataset, 'classes'):
+            num_classes = len(dataset_obj.dataset.classes)
+    except Exception:
+        num_classes = None
+
+    # As a final fallback respect config value (if set), else assume 1
+    if num_classes is None:
+        num_classes = config.get('num_classes') or 1
+
+    return train_loader, val_loader, test_loader, num_classes
 
 
 def setup_model(config, device, logger):
@@ -194,17 +212,38 @@ def setup_model(config, device, logger):
     arch_name = config['arch'][0] if isinstance(
         config['arch'], list) else config['arch']
 
+    # If training, prefer training-ready variant (which provides compute_loss)
+    is_training = config.get('_is_training', False)
+    if arch_name == 'yolonet' and is_training:
+        arch_name_for_loader = 'yolonet_train'
+    else:
+        arch_name_for_loader = arch_name
+
     # Initialize model loader
     model_loader = ModelLoader(device=device, arch=arch_name)
 
+    # Prepare depth mapping for the loader: if we substituted the arch name
+    # (e.g. 'yolonet' -> 'yolonet_train'), map the provided depth config
+    # to the loader's expected key so ModelLoader can find the depth.
+    depth_config = config.get('depth', {}) or {}
+    if arch_name_for_loader != arch_name:
+        # If user provided depth for the public arch (arch_name), but loader
+        # expects the training variation key, remap it.
+        if arch_name in depth_config and arch_name_for_loader not in depth_config:
+            depth_for_loader = {arch_name_for_loader: depth_config[arch_name]}
+        else:
+            depth_for_loader = depth_config
+    else:
+        depth_for_loader = depth_config
+
     # Create model
     models_and_names = model_loader.get_model(
-        model_name=arch_name,
-        depth=config.get('depth', {}),
+        model_name=arch_name_for_loader,
+        depth=depth_for_loader,
         input_channels=3,
-        num_classes=config['num_classes'],
+        num_classes=config.get('num_classes'),
+        dataset_name=config.get('dataset'),
         task_name=None,  # No pre-trained loading for training
-        dataset_name=None
     )
 
     if not models_and_names:
@@ -259,9 +298,17 @@ def train_model(args):
 
     try:
         # Setup data
-        train_loader, val_loader = setup_data(config, logger)
+        train_loader, val_loader, test_loader, detected_num_classes = setup_data(
+            config, logger)
 
-        # Setup model
+        # Update config with detected number of classes and save config again
+        config['num_classes'] = detected_num_classes
+        config_path = Path(config['checkpoint_dir']) / 'config.json'
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        # Setup model (now that config['num_classes'] is correct)
+        config['_is_training'] = True
         model = setup_model(config, device, logger)
 
         # Initialize trainer
@@ -299,7 +346,12 @@ def evaluate_model(args):
 
     try:
         # Setup data
-        _, val_loader = setup_data(config, logger)
+        train_loader, val_loader, test_loader, detected_num_classes = setup_data(
+            config, logger)
+
+        # Update config with detected number of classes before building model
+        config['num_classes'] = detected_num_classes
+        config['_is_training'] = False
 
         # Setup model
         model = setup_model(config, device, logger)
@@ -336,10 +388,11 @@ def main():
     args = parse_args()
 
     # Log basic system information (simplified)
-    print(f"🔧 System: PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}")
+    print(
+        f"🔧 System: PyTorch {torch.__version__}, CUDA {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"🔧 GPUs: {torch.cuda.device_count()} devices")
-    
+
     # Configure logging to reduce verbosity
     logging.basicConfig(level=logging.WARNING)
 

@@ -211,26 +211,39 @@ class DetectionTrainer:
                                 if 'boxes' in pred:
                                     print(
                                         f"  Predicted boxes shape: {pred['boxes'].shape}")
+                                    try:
+                                        num_boxes = int(pred['boxes'].shape[0]) if hasattr(pred['boxes'], 'shape') else (
+                                            pred['boxes'].numel() if hasattr(pred['boxes'], 'numel') else 0)
+                                    except Exception:
+                                        num_boxes = 0
                                     print(
-                                        f"  Num predicted boxes: {len(pred['boxes'])}")
-                                    if len(pred['boxes']) > 0:
+                                        f"  Num predicted boxes: {num_boxes}")
+                                    if hasattr(pred['boxes'], 'numel') and pred['boxes'].numel() > 0:
                                         print(
                                             f"  First 3 boxes: {pred['boxes'][:3]}")
                                 if 'scores' in pred:
                                     print(
-                                        f"  Predicted scores shape: {pred['scores'].shape}")
+                                        f"  Predicted scores shape: {getattr(pred['scores'], 'shape', None)}")
+                                    try:
+                                        num_scores = int(pred['scores'].shape[0]) if hasattr(pred['scores'], 'shape') else (
+                                            pred['scores'].numel() if hasattr(pred['scores'], 'numel') else 0)
+                                    except Exception:
+                                        num_scores = 0
                                     print(
-                                        f"  Num predicted scores: {len(pred['scores'])}")
-                                    if len(pred['scores']) > 0:
-                                        print(
-                                            f"  Score range: {pred['scores'].min():.4f} - {pred['scores'].max():.4f}")
+                                        f"  Num predicted scores: {num_scores}")
+                                    if hasattr(pred['scores'], 'numel') and pred['scores'].numel() > 0:
+                                        try:
+                                            print(
+                                                f"  Score range: {pred['scores'].min():.4f} - {pred['scores'].max():.4f}")
+                                        except Exception:
+                                            pass
                                         print(
                                             f"  Scores above 0.1: {(pred['scores'] > 0.1).sum()}")
                                         print(
                                             f"  Scores above 0.5: {(pred['scores'] > 0.5).sum()}")
                                 if 'labels' in pred:
                                     print(
-                                        f"  Predicted labels shape: {pred['labels'].shape}")
+                                        f"  Predicted labels shape: {getattr(pred['labels'], 'shape', None)}")
 
                         print(f"  Targets sample: {len(targets)} targets")
                         if len(targets) > 0:
@@ -247,9 +260,30 @@ class DetectionTrainer:
                     # Standard forward pass
                     outputs = self.model(images)
 
-                # Update metrics
-                if not isinstance(outputs, dict):
-                    self.metrics.update(outputs, targets)
+                # Normalize outputs into a list of prediction dicts before metrics
+                preds_for_metrics = None
+                if isinstance(outputs, dict):
+                    # Common keys: {'boxes','scores','labels'} or wrapped under 'predictions'/'detections'
+                    if 'predictions' in outputs:
+                        preds_for_metrics = outputs['predictions']
+                    elif 'detections' in outputs:
+                        preds_for_metrics = outputs['detections']
+                    else:
+                        # Single-image dict -> wrap into a list
+                        preds_for_metrics = [outputs]
+                else:
+                    preds_for_metrics = outputs
+
+                # Ensure targets is a list of dicts (already normalized earlier)
+                try:
+                    self.metrics.update(preds_for_metrics, targets)
+                except Exception as e:
+                    # If metrics update fails, log minimal info and continue
+                    self.logger = getattr(self, 'logger', None)
+                    if self.logger:
+                        self.logger.error(f"Metrics update failed: {e}")
+                    else:
+                        print(f"Metrics update failed: {e}")
 
         avg_loss = total_loss / len(self.val_loader) if total_loss > 0 else 0.0
         metrics = self.metrics.get_metrics()

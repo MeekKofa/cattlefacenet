@@ -228,5 +228,12 @@ python main.py --data cattleface --arch yolo8resnet --depth '{"yolo8resnet": [50
 
 
 
-python main.py --data cattleface --arch yolo8resnet --depth '{"yolo8resnet": [50]}' --train_batch 4 --epochs 5 --lr 0.001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 2 --task_name normal_training --optimizer adam
+python main.py --data cattleface --arch yolo8resnet --depth '{"yolo8resnet": [50]}' --train_batch 4 --epochs 2 --lr 0.001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 2 --task_name normal_training --optimizer adam
+
+
+
+
+
+
+python main.py --data cattleface --arch yolonet --depth '{"yolonet": [50]}' --train_batch 4 --epochs 2 --lr 0.001 --drop 0.5 --num_workers 4 --pin_memory --gpu-ids 2 --task_name normal_training --optimizer adam
 ```
